@@ -1,0 +1,9 @@
+{
+    "running_schedule": {
+        "1/12/2025" : {
+            "weekday": "sunday",
+            "am": "120 easy",
+            "pm": "rest"
+        }
+    }
+}

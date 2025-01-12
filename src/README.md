@@ -1,7 +1,7 @@
 # Todo
 
 - Read and Write todolist
-    - Render todolist as list
+  - Render todolist as list
 - weather api
 - trainings schedule read and write
 - popup for writing to lists

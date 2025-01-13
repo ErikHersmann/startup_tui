@@ -1,9 +1,18 @@
 {
     "running_schedule": {
         "1/12/2025" : {
-            "weekday": "sunday",
             "am": "120 easy",
             "pm": "rest"
+        },
+        "1/13/2025": {
+			"am": "30 easy",
+			"pm": "30 easy"
         }
-    }
+    },
+    "todo_list" : [
+    	"shopping",
+        "study kanji",
+        "write code",
+        "thesis"
+    ]
 }

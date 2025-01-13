@@ -1,9 +1,8 @@
 # Todo
 
-- Read and Write todolist
-  - Render todolist as list
+- Write todolist/sched
+  - popup for writing to lists
 - weather api
-- trainings schedule read and write
-- popup for writing to lists
-- popup shopping list
+- popup shopping list, shortcut, then another popup that doesnt clear the first to let u insert shit
 - scrape trainings log from strava
+- join borders

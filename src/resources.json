@@ -1,18 +1,41 @@
 {
-    "running_schedule": {
-        "1/12/2025" : {
-            "am": "120 easy",
+    "running_schedule": [
+        {
+            "date": "01/14/2025",
+            "am": "rest",
+            "pm": "workout"
+        },
+        {
+            "date": "01/15/2025",
+            "am": "30 easy",
+            "pm": "workout"
+        },
+        {
+            "date": "01/16/2025",
+            "am": "rest",
+            "pm": "60 easy"
+        },
+        {
+            "date": "01/17/2025",
+            "am": "60 easy",
             "pm": "rest"
         },
-        "1/13/2025": {
-			"am": "30 easy",
-			"pm": "30 easy"
+        {
+            "date": "01/18/2025",
+            "am": "workout",
+            "pm": "rest"
+        },
+        {
+            "date": "01/19/2025",
+            "am": "120 easy",
+            "pm": "rest"
         }
-    },
-    "todo_list" : [
-    	"shopping",
+    ],
+    "todo_list": [
+        "shopping",
         "study kanji",
         "write code",
         "thesis"
-    ]
+    ],
+    "weather_api_key": "6784c235606c4419436036vqaa4d217"
 }

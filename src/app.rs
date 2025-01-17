@@ -1,41 +1,33 @@
 use chrono::{self, Datelike};
+use chrono_tz::Tz;
 use color_eyre::Result;
-use crossterm::{
-    event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
-    terminal::{self},
-};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use derive_setters::Setters;
-use hello_user::LOG_FILE_PATH;
+use hello_user::{ENVIRONMENT_PATH_JSON, LOG_FILE_PATH};
 use ratatui::{
     buffer::Buffer,
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Constraint, Direction, Flex, Layout, Rect},
     style::{
-        palette::tailwind::{self, SLATE},
+        palette::tailwind::{self},
         Color, Modifier, Style, Stylize,
     },
     symbols,
     text::{Line, Span, Text},
     widgets::{
-        Bar, BarChart, BarGroup, Block, Borders, Cell, Clear, Gauge, HighlightSpacing, Padding,
-        Paragraph, Row, Table, Widget, Wrap,
+        Block, Borders, Cell, Clear, Gauge, HighlightSpacing, Paragraph, Row, Table, Widget, Wrap,
     },
     DefaultTerminal, Frame,
 };
-use std::{
-    collections::hash_map,
-    io::{BufReader, Read, Write},
-};
-// use serde_json::Value;
-use chrono_tz::Tz;
+use std::io::{BufReader, Read, Write};
 use std::{
     collections::HashMap,
     fs::{self, OpenOptions},
-    process::exit,
 };
+use tui_textarea::TextArea;
 
 const TODO_HEADER_STYLE: Style = Style::new().fg(Color::Red).add_modifier(Modifier::BOLD);
 const GAUGE4_COLOR: Color = tailwind::ORANGE.c800;
-const GAUGE4_TEXT_COLOR: Color = Color::Yellow;
+const DEFAULT_TEXT_COLOR: Color = Color::Yellow;
 
 #[derive(Debug, Default, Setters)]
 struct Popup<'a> {
@@ -66,42 +58,13 @@ impl Widget for Popup<'_> {
 }
 
 #[derive(Debug, Default)]
-struct TableColors {
-    buffer_bg: Color,
-    header_bg: Color,
-    header_fg: Color,
-    row_fg: Color,
-    selected_row_style_fg: Color,
-    selected_column_style_fg: Color,
-    selected_cell_style_fg: Color,
-    normal_row_color: Color,
-    alt_row_color: Color,
-    footer_border_color: Color,
-}
-
-impl TableColors {
-    const fn new(color: &tailwind::Palette) -> Self {
-        Self {
-            buffer_bg: tailwind::SLATE.c950,
-            header_bg: color.c900,
-            header_fg: tailwind::SLATE.c200,
-            row_fg: tailwind::SLATE.c200,
-            selected_row_style_fg: color.c400,
-            selected_column_style_fg: color.c400,
-            selected_cell_style_fg: color.c600,
-            normal_row_color: tailwind::SLATE.c950,
-            alt_row_color: tailwind::SLATE.c900,
-            footer_border_color: color.c400,
-        }
-    }
-}
-
-#[derive(Debug, Default)]
-pub struct App {
+pub struct App<'a> {
     /// Is the application running?
     running: bool,
-    colors: TableColors,
     application_state: ApplicationState,
+    textarea_widget: TextArea<'a>,
+    running_totals: [f64; 3],
+    environment_dict: serde_json::Value,
 }
 #[derive(Debug, Default, PartialEq)]
 enum ApplicationState {
@@ -109,9 +72,10 @@ enum ApplicationState {
     Main,
     InsertRunPopup,
     InsertCalendarItemPopup,
+    InsertTodoItemPopup,
 }
 
-impl App {
+impl App<'_> {
     /// Construct a new instance of [`App`].
     pub fn new() -> Self {
         Self::default()
@@ -120,19 +84,68 @@ impl App {
     /// Run the application's main loop.
     pub fn run(mut self, mut terminal: DefaultTerminal) -> Result<()> {
         self.running = true;
+        self.textarea_widget = TextArea::default();
+        self.environment_dict = Self::get_environment_dict();
+        self.get_running_totals_from_json();
         while self.running {
             terminal.draw(|frame| self.ui(frame))?;
             self.handle_crossterm_events()?;
-            if self.application_state != ApplicationState::Main {
-                match terminal.draw(|frame| self.popup(frame)) {
-                    Ok(res) => {
-                        self.application_state = ApplicationState::Main;
+            match self.application_state {
+                ApplicationState::InsertRunPopup => {
+                    loop {
+                        if let Ok(Event::Key(key_inner)) = event::read() {
+                            if key_inner.code == KeyCode::Esc
+                                || key_inner.modifiers == KeyModifiers::CONTROL
+                                    && key_inner.code == KeyCode::Char('c')
+                            {
+                                let _ = append_to_log(&self.textarea_widget.lines().join("\n"));
+                                break;
+                            }
+                            // `TextArea::input` can directly handle key events from backends and update the editor state
+                            self.textarea_widget.input(key_inner);
+                            terminal.draw(|frame| self.ui(frame))?;
+                        } else {
+                            break;
+                        }
                     }
-                    Err(e) => return Err(e.into()),
-                };
+                    self.application_state = ApplicationState::Main;
+                }
+                ApplicationState::InsertTodoItemPopup => {
+                    loop {
+                        if let Ok(Event::Key(key_inner)) = event::read() {
+                            if key_inner.code == KeyCode::Esc
+                                || key_inner.modifiers == KeyModifiers::CONTROL
+                                    && key_inner.code == KeyCode::Char('c')
+                            {
+                                let _ = append_to_log(&self.textarea_widget.lines().join("\n"));
+                                break;
+                            }
+                            // `TextArea::input` can directly handle key events from backends and update the editor state
+                            self.textarea_widget.input(key_inner);
+                            terminal.draw(|frame| self.ui(frame))?;
+                        } else {
+                            break;
+                        }
+                    }
+                }
+                _ => (),
             }
         }
         Ok(())
+    }
+
+    fn get_running_totals_from_json(&mut self) {
+        if let Some(running_items) = self.environment_dict["running_totals"].as_array() {
+            for (index, running_item) in running_items.iter().enumerate() {
+                if let Some(running_item) = running_item.as_f64() {
+                    self.running_totals[index] = running_item;
+                } else {
+                    let _ = append_to_log("running totals f64 conversion failed");
+                }
+            }
+        } else {
+            let _ = append_to_log("messed up running totals existing");
+        }
     }
 
     /// Reads the crossterm events and updates the state of [`App`].
@@ -159,6 +172,16 @@ impl App {
             (KeyModifiers::CONTROL, KeyCode::Char('l') | KeyCode::Char('L')) => {
                 self.modify_todo_list_popup()
             }
+            (KeyModifiers::CONTROL, KeyCode::Char('r')) => {
+                self.application_state = ApplicationState::InsertRunPopup;
+            }
+            (KeyModifiers::CONTROL, KeyCode::Char('t')) => {
+                self.application_state = ApplicationState::InsertRunPopup;
+            }
+            (KeyModifiers::CONTROL, KeyCode::Char('0')) => {
+                self.running_totals = [0.0, self.running_totals[1], self.running_totals[2]];
+                let _ = self.update_running_totals_in_json();
+            }
             _ => {}
         }
     }
@@ -170,24 +193,6 @@ impl App {
     /// Set running to false to quit the application.
     fn quit(&mut self) {
         self.running = false;
-    }
-
-    fn popup(&mut self, frame: &mut Frame) {
-        let popup = Popup::default()
-            .content("Hello world!")
-            .style(Style::new().yellow())
-            .title("With Clear")
-            .title_style(Style::new().white().bold())
-            .border_style(Style::new().red());
-        frame.render_widget(
-            popup,
-            Rect {
-                x: 10,
-                y: 10,
-                width: 5,
-                height: 5,
-            },
-        );
     }
 
     fn ui(&mut self, f: &mut Frame) {
@@ -277,14 +282,12 @@ impl App {
         // .bg(Color::LightCyan);
         let mut todo_list_text: Vec<Line<'_>> =
             vec![Span::styled("TODO", TODO_HEADER_STYLE).into()];
-        let environment_dict = App::get_environment_dict();
-        if let Some(todo_items) = environment_dict["todo_list"].as_array() {
+        if let Some(todo_items) = self.environment_dict["todo_list"].as_array() {
             for (index, todo_item) in todo_items.iter().enumerate() {
                 if let Some(todo_item_inner) = todo_item.as_str() {
                     todo_list_text.push(
                         Span::styled("\t".to_string() + todo_item_inner, todo_item_style).into(),
                     );
-                    // println!("Todo item {}: {}", index, todo_item);
                 }
             }
         } else {
@@ -311,8 +314,8 @@ impl App {
             // Insert into the map
             date_to_index_map.insert(date_string_in_loop, day_increment);
         }
-        append_to_log(&format!("{:?}", date_to_index_map)).unwrap();
-        if let Some(running_items) = environment_dict["running_schedule"].as_array() {
+        // append_to_log(&format!("{:?}", date_to_index_map)).unwrap();
+        if let Some(running_items) = self.environment_dict["running_schedule"].as_array() {
             for todo_item in running_items.iter() {
                 if let Some(dict_date_key_str) = todo_item["date"].as_str() {
                     if date_to_index_map.contains_key(dict_date_key_str) {
@@ -335,36 +338,31 @@ impl App {
         // TABLE STUFF//
         ////////////////
         let header_style = Style::default()
-            .fg(self.colors.header_fg)
-            .bg(self.colors.header_bg);
-        let selected_row_style = Style::default()
-            .add_modifier(Modifier::REVERSED)
-            .fg(self.colors.selected_row_style_fg);
-        let selected_col_style = Style::default().fg(self.colors.selected_column_style_fg);
-        let selected_cell_style = Style::default()
-            .add_modifier(Modifier::REVERSED)
-            .fg(self.colors.selected_cell_style_fg);
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD);
 
+        let weekday_strs = [
+            "月曜日",
+            "火曜日",
+            "水曜日",
+            "木曜日",
+            "金曜日",
+            "土曜日",
+            "日曜日",
+        ];
 
-        let japanese_weekdays = ["月曜日", "火曜日", "水曜日", "木曜日", "金曜日", "土曜日", "日曜日"];
-
-        // Get today's weekday index (0 = Monday, 6 = Sunday)
         let today = chrono::Local::now();
         let weekday_index = today.weekday().num_days_from_monday() as usize;
-
-        // Build the array
-        let mut weekdays_array = vec![""]; // Start with an empty string
-        weekdays_array.extend(japanese_weekdays.iter().cycle().skip(weekday_index).take(7));
-
-        // Convert to array (if needed)
+        let mut weekdays_array = vec![""];
+        weekdays_array.extend(weekday_strs.iter().cycle().skip(weekday_index).take(7));
         let weekdays_array: [&str; 8] = weekdays_array.try_into().expect("Incorrect array size");
 
         let header = weekdays_array
-        .into_iter()
-        .map(Cell::from)
-        .collect::<Row>()
-        .style(header_style)
-        .height(1);
+            .into_iter()
+            .map(Cell::from)
+            .collect::<Row>()
+            .style(header_style)
+            .height(1);
         let bar = " █ ";
 
         let mut am_running_items_table = vec!["Training AM"];
@@ -373,16 +371,17 @@ impl App {
         pm_running_items_table.append(&mut pm_running_items);
         let mut weather_items_table = vec!["Weather", "Sunny"];
         weather_items_table.append(&mut debug_vector);
+        let row_style = Style::default().fg(Color::Yellow);
         let rows = [
-            Row::new(vec!["Dawn start", "7:12"]),
-            Row::new(vec!["Dawn end", "7:42"]),
-            Row::new(vec!["Dusk start", "20:12"]),
-            Row::new(vec!["Dusk end", "20:50"]),
-            Row::new(weather_items_table),
-            Row::new(vec!["Low", "-2°C"]),
-            Row::new(vec!["High", "7°C"]),
-            Row::new(am_running_items_table),
-            Row::new(pm_running_items_table),
+            Row::new(vec!["Dawn start", "7:12"]).style(row_style),
+            Row::new(vec!["Dawn end", "7:42"]).style(row_style),
+            Row::new(vec!["Dusk start", "20:12"]).style(row_style),
+            Row::new(vec!["Dusk end", "20:50"]).style(row_style),
+            Row::new(weather_items_table).style(row_style),
+            Row::new(vec!["Low", "-2°C"]).style(row_style),
+            Row::new(vec!["High", "7°C"]).style(row_style),
+            Row::new(am_running_items_table).style(row_style),
+            Row::new(pm_running_items_table).style(row_style),
         ];
         let widths = [
             Constraint::Length(14),
@@ -396,16 +395,12 @@ impl App {
         ];
         let table_bottom_left = Table::new(rows, widths)
             .header(header)
-            .row_highlight_style(selected_row_style)
-            .column_highlight_style(selected_col_style)
-            .cell_highlight_style(selected_cell_style)
             .highlight_symbol(Text::from(vec![
                 "".into(),
                 bar.into(),
                 bar.into(),
                 "".into(),
             ]))
-            .bg(self.colors.buffer_bg)
             .highlight_spacing(HighlightSpacing::Always);
 
         ////////////
@@ -422,14 +417,12 @@ impl App {
             bottom_left: symbols::line::NORMAL.horizontal_up,
             ..symbols::border::PLAIN
         };
-        let week_current: f64 = 15.0;
-        let month_current: f64 = 200.0;
-        let year_current: f64 = 200.0;
+        let [week_current, month_current, year_current] = self.running_totals;
         let week_max = 110.0;
         let month_max = 400.0;
         let year_max = 5000.0;
         let label_style_gauge = Style::default()
-            .fg(GAUGE4_TEXT_COLOR)
+            .fg(DEFAULT_TEXT_COLOR)
             .add_modifier(Modifier::DIM);
         let gauge_week = Gauge::default()
             .block(Block::new().borders(Borders::ALL))
@@ -455,9 +448,80 @@ impl App {
                 year_current.to_string() + "/" + &year_max.to_string(),
                 label_style_gauge,
             ));
+        let shortcut_key_combination_style = Style::new().fg(Color::LightBlue);
+        let important_letter_combination_styled = Style::new()
+            .fg(Color::LightBlue)
+            .add_modifier(Modifier::BOLD);
+        let shortcut_list_lines = vec![
+            vec![
+                Span::styled("ctrl+r", shortcut_key_combination_style),
+                Span::styled(" edit ", DEFAULT_TEXT_COLOR),
+                Span::styled("r", important_letter_combination_styled),
+                Span::styled("unning schedule", DEFAULT_TEXT_COLOR),
+            ]
+            .into(),
+            vec![
+                Span::styled("ctrl+t", shortcut_key_combination_style),
+                Span::styled(" edit ", DEFAULT_TEXT_COLOR),
+                Span::styled("t", important_letter_combination_styled).add_modifier(Modifier::BOLD),
+                Span::styled("odo list", DEFAULT_TEXT_COLOR),
+            ]
+            .into(),
+            vec![
+                Span::styled("ctrl+w", shortcut_key_combination_style),
+                Span::styled(" add distance to ", DEFAULT_TEXT_COLOR),
+                Span::styled("w", important_letter_combination_styled),
+                Span::styled("eekly total", DEFAULT_TEXT_COLOR),
+            ]
+            .into(),
+            vec![
+                Span::styled("ctrl+0", shortcut_key_combination_style),
+                Span::styled(" reset weekly distance to ", DEFAULT_TEXT_COLOR),
+                Span::styled("0", important_letter_combination_styled),
+            ]
+            .into(),
+        ];
+        let shortcut_list_text = Paragraph::new(shortcut_list_lines);
         ////////////
         // RENDER//
         ////////////
+        match self.application_state {
+            ApplicationState::InsertRunPopup => {
+                let centered_area = App::center(
+                    f.area(),
+                    Constraint::Percentage(20),
+                    Constraint::Length(3), // top and bottom border + content
+                );
+                self.textarea_widget.set_block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(Color::LightBlue))
+                        .title("Running Input"),
+                );
+                self.textarea_widget
+                    .set_style(Style::default().fg(Color::Yellow));
+                self.textarea_widget.set_placeholder_style(Style::default());
+                self.textarea_widget.set_placeholder_text("prompt message");
+                f.render_widget(Clear, centered_area);
+                f.render_widget(&self.textarea_widget, centered_area);
+            }
+            _ => (),
+        }
+        f.render_widget(
+            shortcut_list_text.block(
+                Block::new()
+                    .borders(Borders::TOP | Borders::RIGHT | Borders::LEFT)
+                    .border_set(top_right_border_set),
+            ),
+            layout_bottom_middle[0],
+        );
+        f.render_widget(
+            Paragraph::new("Todo plan for today with spans and calendar").block(
+                Block::new()
+                    .borders(Borders::LEFT | Borders::RIGHT | Borders::TOP | Borders::BOTTOM),
+            ),
+            layout_left_side[0],
+        );
         f.render_widget(
             Paragraph::new(todo_list_text).block(Block::new().borders(Borders::ALL)),
             layout_right[0],
@@ -466,22 +530,6 @@ impl App {
             table_bottom_left
                 .block(Block::new().borders(Borders::TOP | Borders::LEFT | Borders::BOTTOM)),
             layout_left_bottom[0],
-        );
-        f.render_widget(
-            Paragraph::new("Top left").block(
-                Block::new()
-                    .borders(Borders::LEFT | Borders::RIGHT | Borders::TOP | Borders::BOTTOM),
-            ),
-            layout_left_side[0],
-        );
-
-        f.render_widget(
-            Paragraph::new("Bottom middle").block(
-                Block::new()
-                    .borders(Borders::TOP | Borders::RIGHT | Borders::LEFT)
-                    .border_set(top_right_border_set),
-            ),
-            layout_bottom_middle[0],
         );
         f.render_widget(gauge_week, layout_gauges[0]);
         f.render_widget(gauge_month, layout_gauges[1]);
@@ -519,6 +567,46 @@ impl App {
         // return_value[0][0] = "test".to_string();
 
         // return return_value;
+    }
+
+    fn center(area: Rect, horizontal: Constraint, vertical: Constraint) -> Rect {
+        let [area] = Layout::horizontal([horizontal])
+            .flex(Flex::Center)
+            .areas(area);
+        let [area] = Layout::vertical([vertical]).flex(Flex::Center).areas(area);
+        area
+    }
+    fn update_running_totals_in_json(&self) -> std::io::Result<()> {
+        // let mut environment_dict = App::get_environment_dict();
+        // let mut file = OpenOptions::new()
+        //     .write(true)
+        //     .append(true)
+        //     .open(ENVIRONMENT_PATH_JSON)
+        //     .unwrap();
+
+        // Ok(())
+
+        let mut file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(ENVIRONMENT_PATH_JSON)?;
+
+        let mut contents = String::new();
+        file.read_to_string(&mut contents)?;
+        let mut env_dict: serde_json::Value = serde_json::from_str(&contents)?;
+        if let Some(running_totals) = env_dict.get_mut("running_totals") {
+            *running_totals = serde_json::json!(self.running_totals);
+        } else {
+            env_dict["running_totals"] = serde_json::json!(self.running_totals);
+        }
+        let updated_json = serde_json::to_string_pretty(&env_dict)?;
+        let mut file = OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(ENVIRONMENT_PATH_JSON)?;
+        file.write_all(updated_json.as_bytes())?;
+
+        Ok(())
     }
 }
 

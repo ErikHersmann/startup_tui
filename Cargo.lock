@@ -492,6 +492,7 @@ dependencies = [
  "serde",
  "serde_json",
  "text_io",
+ "tokio",
  "tui-textarea",
 ]
 
